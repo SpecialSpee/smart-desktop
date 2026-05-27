@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Smart Desktop — Window Manager with Spaces
-Production version with async updates, animations, logging, and desktop button
+Smart Desktop v1.1 — Window Manager with Spaces
+Production version with:
+- Real-time window monitoring
+- Configurable limits & hotkeys
+- Auto-close panel
+- Full settings dialog with themes
+- Cross-platform ready architecture
 """
 
 import tkinter as tk
@@ -28,8 +33,9 @@ except ImportError:
     KEYBOARD_AVAILABLE = False
 
 # ============================================================================
-# CONFIGURATION & LOGGING
+# DEFAULT SETTINGS & CONFIGURATION
 # ============================================================================
+
 
 WATER_COLORS = {
     "bg": "#01052B",
@@ -44,11 +50,61 @@ WATER_COLORS = {
     "main_ripple": "#ff8c42",
 }
 
-# Настройки
-PANEL_WIDTH = 480
-PANEL_HEIGHT_EXPANDED = 980
-FLAG_SIZE = 40
+ORIGINAL_WATER_COLORS = WATER_COLORS.copy()
+
+DARK_COLORS = {
+    "bg": "#1a1a2e",
+    "surface": "#16213e",
+    "glass": "#0f3460",
+    "glass_border": "#533483",
+    "accent": "#e94560",
+    "accent_glow": "#c73e54",
+    "text": "#eaeaea",
+    "text_dim": "#a0a0a0",
+    "ripple": "#e94560",
+    "main_ripple": "#ffd700",
+}
+
+LIGHT_COLORS = {
+    "bg": "#f0f4f8",
+    "surface": "#d9e2ec",
+    "glass": "#bcccdc",
+    "glass_border": "#9fb3c8",
+    "accent": "#0077b6",
+    "accent_glow": "#005f8a",
+    "text": "#102a43",
+    "text_dim": "#627d98",
+    "ripple": "#0077b6",
+    "main_ripple": "#ff6b35",
+}
+
+# Настройки по умолчанию
+DEFAULT_SETTINGS = {
+    "ui": {
+        "theme": "water",  # water, dark, light
+        "panel_position": "right",  # right, left
+        "animation_speed": 1.0,
+        "colors": None,  # None = использовать тему
+    },
+    "behavior": {
+        "max_spaces": 4,  # 2-10
+        "max_windows_per_space": 15,  # 5-50
+        "auto_close_delay": 15,  # секунды (0 = отключено)
+        "window_monitor_interval": 2000,  # мс
+        "minimize_other_spaces": True,
+    },
+    "hotkeys": {
+        "toggle_panel": "F1",
+        "apply_layout": "F2",
+        "save_layout": "F3",
+        "show_desktop": "Ctrl+D",
+        "switch_spaces": ["Ctrl+F1", "Ctrl+F2", "Ctrl+F3", "Ctrl+F4"]
+    }
+}
+
+# Пути
 CONFIG_FILE = "desktop_manager_config.json"
+SETTINGS_FILE = "smart_desktop_settings.json"
 LOG_FILE = Path(__file__).parent / "smart_desktop.log"
 
 # Настройка логгера
@@ -64,7 +120,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# RIPPLE MANAGER (Optimized with easing + cleanup)
+# RIPPLE MANAGER (Optimized)
 # ============================================================================
 
 class RippleManager:
@@ -72,13 +128,12 @@ class RippleManager:
         self.canvas = canvas
         self.ripples = []
         self.active = False
-        self._max_ripples = 50  # Prevent memory leaks
+        self._max_ripples = 10
 
     def create_ripple(self, x, y, is_main=False, max_radius=80):
         if not self.canvas or len(self.ripples) >= self._max_ripples:
             return
         
-        # Clean up old ripples if overflow
         if len(self.ripples) > self._max_ripples - 4:
             for r in self.ripples[:4]:
                 try:
@@ -91,16 +146,12 @@ class RippleManager:
         for i in range(2):
             try:
                 rid = self.canvas.create_oval(
-                    x-4, y-4, x+4, y+4, 
+                    x-4, y-4, x+4, y+4,
                     outline=color, width=max(1, 2-i), state="hidden"
                 )
                 self.ripples.append({
-                    "id": rid, 
-                    "x": x, 
-                    "y": y, 
-                    "radius": 4,
-                    "max_radius": max_radius, 
-                    "color": color,
+                    "id": rid, "x": x, "y": y, "radius": 4,
+                    "max_radius": max_radius, "color": color,
                     "start_time": time.time() * 1000 + i * 60,
                     "alpha": 1.0
                 })
@@ -134,15 +185,13 @@ class RippleManager:
                     pass
                 continue
             
-            # ✅ Cubic ease-out for smooth animation
             eased = 1 - math.pow(1 - progress, 3)
             radius = 4 + (r["max_radius"] - 4) * eased
             alpha = 1.0 - progress
             
             try:
                 self.canvas.coords(
-                    r["id"], 
-                    r["x"]-radius, r["y"]-radius, 
+                    r["id"], r["x"]-radius, r["y"]-radius,
                     r["x"]+radius, r["y"]+radius
                 )
                 if alpha < 0.3:
@@ -165,7 +214,6 @@ class RippleManager:
             self.active = False
 
     def cleanup(self):
-        """Clear all ripples on exit"""
         for r in self.ripples:
             try:
                 self.canvas.delete(r["id"])
@@ -173,6 +221,368 @@ class RippleManager:
                 pass
         self.ripples.clear()
         self.active = False
+
+
+# ============================================================================
+# SETTINGS DIALOG
+# ============================================================================
+
+class SettingsDialog(ctk.CTkToplevel):
+    def __init__(self, parent, settings: dict, on_save, on_preview=None):
+        super().__init__(parent)
+        self.settings = json.loads(json.dumps(settings))  # Deep copy
+        self.on_save = on_save
+        self.on_preview = on_preview
+        
+        self.title("⚙️ Настройки Smart Desktop")
+        self.geometry("500x650")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        
+        # Центрирование
+        self.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{x}+{y}")
+        
+        self._build_ui()
+        logger.info("Settings dialog opened")
+
+    def _build_ui(self):
+        # Заголовок
+        title_label = ctk.CTkLabel(
+            self, text="⚙️ Настройки",
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        title_label.pack(pady=(15, 10))
+        
+        # Вкладки
+        tabview = ctk.CTkTabview(self, width=480, height=480)
+        tabview.pack(padx=10, pady=10)
+        
+        # Вкладки
+        ui_tab = tabview.add("🎨 Интерфейс")
+        behavior_tab = tabview.add("⚡ Поведение")
+        hotkeys_tab = tabview.add("⌨️ Горячие клавиши")
+        
+        self._build_ui_tab(ui_tab)
+        self._build_behavior_tab(behavior_tab)
+        self._build_hotkeys_tab(hotkeys_tab)
+        
+        # Кнопки
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=15)
+        
+        ctk.CTkButton(
+            btn_frame, text="💾 Сохранить",
+            command=self._save, width=120,
+            fg_color="#27ae60", hover_color="#219a52"
+        ).pack(side="left", padx=5)
+        
+        ctk.CTkButton(
+            btn_frame, text="❌ Отмена",
+            command=self.destroy, width=120,
+            fg_color="#7f8c8d", hover_color="#95a5a6"
+        ).pack(side="left", padx=5)
+        
+        ctk.CTkButton(
+            btn_frame, text="🔄 Сброс",
+            command=self._reset, width=120,
+            fg_color="#c0392b", hover_color="#e74c3c"
+        ).pack(side="left", padx=5)
+
+    def _build_ui_tab(self, parent):
+        scroll = ctk.CTkScrollableFrame(parent, width=460, height=420)
+        scroll.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Тема
+        ctk.CTkLabel(
+            scroll, text="🎨 Тема оформления:",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(10, 5))
+        
+        theme_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        theme_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.theme_var = tk.StringVar(value=self.settings["ui"]["theme"])
+        themes = [
+            ("💧 Водяная (синяя)", "water", WATER_COLORS["bg"]),
+            ("🌙 Тёмная", "dark", DARK_COLORS["bg"]),
+            ("☀️ Светлая", "light", LIGHT_COLORS["bg"])
+        ]
+        
+        for text, val, color in themes:
+            btn = ctk.CTkRadioButton(
+                theme_frame, text=text, variable=self.theme_var,
+                value=val, command=self._on_theme_change
+            )
+            btn.pack(anchor="w", pady=2)
+        
+        # Предпросмотр темы
+        self.preview_frame = ctk.CTkFrame(scroll, width=400, height=80, corner_radius=10)
+        self.preview_frame.pack(pady=15, padx=10)
+        self.preview_frame.pack_propagate(False)
+        
+        preview_label = ctk.CTkLabel(
+            self.preview_frame, text="Предпросмотр темы",
+            font=ctk.CTkFont(size=14)
+        )
+        preview_label.pack(expand=True)
+        
+        self._update_theme_preview()
+        
+        # Позиция панели
+        ctk.CTkLabel(
+            scroll, text="📍 Позиция панели:",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(15, 5))
+        
+        pos_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        pos_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.pos_var = tk.StringVar(value=self.settings["ui"]["panel_position"])
+        positions = [
+            ("Справа (по умолчанию)", "right"),
+            ("Слева", "left"),
+        ]
+        
+        for text, val in positions:
+            ctk.CTkRadioButton(
+                pos_frame, text=text, variable=self.pos_var,
+                value=val
+            ).pack(anchor="w", pady=2)
+        
+        # Скорость анимации
+        ctk.CTkLabel(
+            scroll, text="🎬 Скорость анимации:",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(15, 5))
+        
+        self.anim_speed_slider = ctk.CTkSlider(
+            scroll, from_=0.5, to=2.0, number_of_steps=15,
+            command=self._update_anim_speed_label
+        )
+        self.anim_speed_slider.set(self.settings["ui"]["animation_speed"])
+        self.anim_speed_slider.pack(fill="x", padx=10, pady=5)
+        
+        self.anim_speed_label = ctk.CTkLabel(
+            scroll, text=f"{self.settings['ui']['animation_speed']}x"
+        )
+        self.anim_speed_label.pack(anchor="e", padx=10, pady=(0, 10))
+
+    def _build_behavior_tab(self, parent):
+        scroll = ctk.CTkScrollableFrame(parent, width=460, height=420)
+        scroll.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Максимум пространств
+        ctk.CTkLabel(
+            scroll, text="🔢 Максимум пространств:",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(10, 5))
+        
+        self.max_spaces_slider = ctk.CTkSlider(
+            scroll, from_=2, to=10, number_of_steps=8,
+            command=self._update_max_spaces_label
+        )
+        self.max_spaces_slider.set(self.settings["behavior"]["max_spaces"])
+        self.max_spaces_slider.pack(fill="x", padx=10, pady=5)
+        
+        self.max_spaces_label = ctk.CTkLabel(
+            scroll, text=f"{int(self.settings['behavior']['max_spaces'])}"
+        )
+        self.max_spaces_label.pack(anchor="e", padx=10, pady=(0, 10))
+        
+        # Максимум окон
+        ctk.CTkLabel(
+            scroll, text="🪟 Максимум окон на пространство:",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(10, 5))
+        
+        self.max_windows_slider = ctk.CTkSlider(
+            scroll, from_=5, to=50, number_of_steps=45,
+            command=self._update_max_windows_label
+        )
+        self.max_windows_slider.set(self.settings["behavior"]["max_windows_per_space"])
+        self.max_windows_slider.pack(fill="x", padx=10, pady=5)
+        
+        self.max_windows_label = ctk.CTkLabel(
+            scroll, text=f"{int(self.settings['behavior']['max_windows_per_space'])}"
+        )
+        self.max_windows_label.pack(anchor="e", padx=10, pady=(0, 10))
+        
+        # Авто-закрытие
+        ctk.CTkLabel(
+            scroll, text="⏱️ Авто-закрытие панели (сек):",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(10, 5))
+        
+        self.auto_close_slider = ctk.CTkSlider(
+            scroll, from_=0, to=60, number_of_steps=12,
+            command=self._update_auto_close_label
+        )
+        self.auto_close_slider.set(self.settings["behavior"]["auto_close_delay"])
+        self.auto_close_slider.pack(fill="x", padx=10, pady=5)
+        
+        auto_close_val = int(self.settings["behavior"]["auto_close_delay"])
+        auto_close_text = "отключено" if auto_close_val == 0 else f"{auto_close_val} сек"
+        self.auto_close_label = ctk.CTkLabel(scroll, text=auto_close_text)
+        self.auto_close_label.pack(anchor="e", padx=10, pady=(0, 10))
+        
+        # Интервал мониторинга
+        ctk.CTkLabel(
+            scroll, text="🔄 Интервал обновления окон (мс):",
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=(10, 5))
+        
+        self.monitor_interval_slider = ctk.CTkSlider(
+            scroll, from_=500, to=5000, number_of_steps=9,
+            command=self._update_monitor_interval_label
+        )
+        self.monitor_interval_slider.set(self.settings["behavior"]["window_monitor_interval"])
+        self.monitor_interval_slider.pack(fill="x", padx=10, pady=5)
+        
+        self.monitor_interval_label = ctk.CTkLabel(
+            scroll, text=f"{int(self.settings['behavior']['window_monitor_interval'])} мс"
+        )
+        self.monitor_interval_label.pack(anchor="e", padx=10, pady=(0, 10))
+        
+        # Чекбокс: сворачивать другие пространства
+        self.minimize_var = tk.BooleanVar(
+            value=self.settings["behavior"]["minimize_other_spaces"]
+        )
+        minimize_check = ctk.CTkCheckBox(
+            scroll, text="Сворачивать окна других пространств",
+            variable=self.minimize_var
+        )
+        minimize_check.pack(anchor="w", padx=10, pady=15)
+
+    def _build_hotkeys_tab(self, parent):
+        scroll = ctk.CTkScrollableFrame(parent, width=460, height=420)
+        scroll.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        ctk.CTkLabel(
+            scroll, text="⌨️ Настройка горячих клавиш",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w"
+        ).pack(fill="x", padx=10, pady=10)
+        
+        info_label = ctk.CTkLabel(
+            scroll,
+            text="💡 Для изменения нажмите на поле и введите новую комбинацию\n(пока недоступно — используйте значения по умолчанию)",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            justify="left"
+        )
+        info_label.pack(fill="x", padx=10, pady=10)
+        
+        # Список хоткеев (только для отображения)
+        hotkeys_info = [
+            ("Открыть/закрыть панель", self.settings["hotkeys"]["toggle_panel"]),
+            ("Применить расстановку", self.settings["hotkeys"]["apply_layout"]),
+            ("Сохранить позиции", self.settings["hotkeys"]["save_layout"]),
+            ("Показать рабочий стол", self.settings["hotkeys"]["show_desktop"]),
+            ("Пространство 1", "Ctrl+F1"),
+            ("Пространство 2", "Ctrl+F2"),
+            ("Пространство 3", "Ctrl+F3"),
+            ("Пространство 4", "Ctrl+F4"),
+        ]
+        
+        for desc, key in hotkeys_info:
+            frame = ctk.CTkFrame(scroll, fg_color="transparent")
+            frame.pack(fill="x", padx=10, pady=3)
+            
+            ctk.CTkLabel(frame, text=desc, width=250, anchor="w").pack(side="left")
+            ctk.CTkLabel(
+                frame, text=key,
+                font=ctk.CTkFont(weight="bold"),
+                text_color=WATER_COLORS["accent"]
+            ).pack(side="right")
+
+    def _update_theme_preview(self):
+        theme = self.theme_var.get()
+        colors = {
+            "water": (WATER_COLORS["bg"], WATER_COLORS["accent"], "💧 Водяная тема"),
+            "dark": (DARK_COLORS["bg"], DARK_COLORS["accent"], "🌙 Тёмная тема"),
+            "light": (LIGHT_COLORS["bg"], LIGHT_COLORS["accent"], "☀️ Светлая тема")
+        }
+        
+        bg, accent, text = colors.get(theme, colors["water"])
+        self.preview_frame.configure(fg_color=bg)
+        
+        for widget in self.preview_frame.winfo_children():
+            if isinstance(widget, ctk.CTkLabel):
+                widget.configure(text=f"{text}\nПредпросмотр")
+
+    def _on_theme_change(self):
+        self._update_theme_preview()
+        if self.on_preview:
+            self.on_preview({"ui": {"theme": self.theme_var.get()}})
+
+    def _update_anim_speed_label(self, val):
+        self.anim_speed_label.configure(text=f"{float(val):.1f}x")
+
+    def _update_max_spaces_label(self, val):
+        self.max_spaces_label.configure(text=f"{int(val)}")
+
+    def _update_max_windows_label(self, val):
+        self.max_windows_label.configure(text=f"{int(val)}")
+
+    def _update_auto_close_label(self, val):
+        val = int(val)
+        text = "отключено" if val == 0 else f"{val} сек"
+        self.auto_close_label.configure(text=text)
+
+    def _update_monitor_interval_label(self, val):
+        self.monitor_interval_label.configure(text=f"{int(val)} мс")
+
+    def _save(self):
+        """Сохраняет настройки и закрывает диалог"""
+        self.settings["ui"]["theme"] = self.theme_var.get()
+        self.settings["ui"]["panel_position"] = self.pos_var.get()
+        self.settings["ui"]["animation_speed"] = float(self.anim_speed_slider.get())
+        
+        self.settings["behavior"]["max_spaces"] = int(self.max_spaces_slider.get())
+        self.settings["behavior"]["max_windows_per_space"] = int(self.max_windows_slider.get())
+        self.settings["behavior"]["auto_close_delay"] = int(self.auto_close_slider.get())
+        self.settings["behavior"]["window_monitor_interval"] = int(self.monitor_interval_slider.get())
+        self.settings["behavior"]["minimize_other_spaces"] = self.minimize_var.get()
+        
+        self.on_save(self.settings)
+        logger.info("Settings saved from dialog")
+        self.destroy()
+
+    def _reset(self):
+        """Сбрасывает настройки к дефолтным"""
+        if messagebox.askyesno("Сброс настроек", "Вернуть все настройки к значениям по умолчанию?"):
+            self.settings = json.loads(json.dumps(DEFAULT_SETTINGS))
+            
+            # Обновить все виджеты
+            self.theme_var.set(self.settings["ui"]["theme"])
+            self.pos_var.set(self.settings["ui"]["panel_position"])
+            self.anim_speed_slider.set(self.settings["ui"]["animation_speed"])
+            self.max_spaces_slider.set(self.settings["behavior"]["max_spaces"])
+            self.max_windows_slider.set(self.settings["behavior"]["max_windows_per_space"])
+            self.auto_close_slider.set(self.settings["behavior"]["auto_close_delay"])
+            self.monitor_interval_slider.set(self.settings["behavior"]["window_monitor_interval"])
+            self.minimize_var.set(self.settings["behavior"]["minimize_other_spaces"])
+            
+            # Обновить лейблы
+            self._update_theme_preview()
+            self._update_anim_speed_label(self.settings["ui"]["animation_speed"])
+            self._update_max_spaces_label(self.settings["behavior"]["max_spaces"])
+            self._update_max_windows_label(self.settings["behavior"]["max_windows_per_space"])
+            self._update_auto_close_label(self.settings["behavior"]["auto_close_delay"])
+            self._update_monitor_interval_label(self.settings["behavior"]["window_monitor_interval"])
+            
+            logger.info("Settings reset to default")
 
 
 # ============================================================================
@@ -186,210 +596,464 @@ class SmartDesktop(ctk.CTk):
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         
-        # Dynamic screen metrics
+        # ✅ Инициализация атрибутов ДО вызова методов
+        self.panel_expanded = False  # ✅ ПЕРЕМЕСТИЛИ СЮДА!
+        self.max_spaces = 4  # ✅ Временное значение до загрузки настроек
+        self.max_windows_per_space = 15
+        
+        # Загрузка настроек
+        self.settings = DEFAULT_SETTINGS.copy()
+        self._load_settings()
+        
+        # Обновляем лимиты после загрузки настроек
+        self.max_spaces = self.settings["behavior"]["max_spaces"]
+        self.max_windows_per_space = self.settings["behavior"]["max_windows_per_space"]
+        
+        # Применение темы (теперь panel_expanded уже определён!)
+        self._apply_theme_settings()  # ✅ Теперь безопасно!
+        
+        # Динамические метрики
         self._update_screen_metrics()
         
-        self.panel_expanded = False
+        # Позиционирование
         self._position_flag()
         
         self.configure(fg_color=WATER_COLORS["bg"])
         self.attributes("-alpha", 0.99)
 
-        # Double buffering for canvas (reduce flicker)
-        self.bg_canvas = None  # Created after window init
+        # Canvas
+        self.bg_canvas = tk.Canvas(
+            self, bg=WATER_COLORS["bg"],
+            highlightthickness=0, bd=0
+        )
+        self.bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        try:
+            self.bg_canvas.config(doublebuffer=True)
+        except:
+            pass
+        self.ripple_manager = RippleManager(self.bg_canvas)
 
-        # Data
-        self.spaces: List[Dict] = [{"windows": []} for _ in range(4)]
+        # Данные
+        self.spaces: List[Dict] = [{"windows": []} for _ in range(self.max_spaces)]
         self.cur_space = 0
         self.available: List[Tuple[int, str]] = []
         self.card_widgets: List[ctk.CTkFrame] = []
         
-        # Cache for window rects
+        # Кэш окон
         self._window_rect_cache: Dict[int, Tuple] = {}
         self._cache_timestamp = 0
         self._cache_ttl = 0.5
         
+        # Мониторинг окон
+        self._window_monitor_active = False
+        self._last_window_hash = None
+        
+        # Авто-закрытие
+        self._auto_close_timer = None
+        self._ignore_auto_close_until = 0
+        
         self._load_config()
 
-        # Initialize UI components
-        self._init_canvas()
+        # Инициализация UI
         self._init_flag_button()
         self._init_header()
         self._init_content()
         self._init_status()
         self._init_hotkeys()
         
-        # Start async window refresh
+        # Запуск асинхронного обновления
         self.after(200, self._refresh_windows_async)
         
-        logger.info("Smart Desktop initialized")
+        logger.info("=== Smart Desktop v1.1 Started ===")
 
-    def _init_canvas(self):
-        """Initialize background canvas with double buffering"""
-        self.bg_canvas = tk.Canvas(
-            self, bg=WATER_COLORS["bg"], 
-            highlightthickness=0, bd=0
-        )
-        self.bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
-        # Enable double buffering (Windows-specific)
-        try:
-            self.bg_canvas.config(doublebuffer=True)
-        except:
-            pass  # Fallback if not supported
-        self.ripple_manager = RippleManager(self.bg_canvas)
+    def _apply_theme_settings(self):
+        """Применяет тему из настроек"""
+        theme = self.settings["ui"]["theme"]
+        
+        # ✅ Выбираем источник цветов
+        if theme == "dark":
+            new_colors = DARK_COLORS.copy()
+        elif theme == "light":
+            new_colors = LIGHT_COLORS.copy()
+        else:  # water или неизвестная
+            new_colors = ORIGINAL_WATER_COLORS.copy()
+        
+        # ✅ Обновляем глобальный словарь
+        for key in WATER_COLORS:
+            if key in new_colors:
+                WATER_COLORS[key] = new_colors[key]
+        
+        # ✅ Перерисовываем UI с новыми цветами
+        self._refresh_theme_ui()
+
+    def _refresh_theme_ui(self):
+        """Обновляет цвета всех активных элементов (с безопасными проверками)"""
+        # Основное окно (всегда существует)
+        self.configure(fg_color=WATER_COLORS["bg"])
+        
+        # ✅ Безопасное обновление кнопки-флажка
+        if not self.panel_expanded and hasattr(self, 'flag_btn'):
+            self.flag_btn.configure(
+                fg_color=WATER_COLORS["accent"],
+                hover_color=WATER_COLORS["accent_glow"]
+            )
+            return
+        
+        # ✅ Обновляем только если панель развёрнута и элементы существуют
+        if not self.panel_expanded:
+            return
+        
+        # Шапка
+        if hasattr(self, 'header_frame'):
+            self.header_frame.configure(fg_color=WATER_COLORS["surface"])
+        
+        # Кнопки в шапке
+        if hasattr(self, 'settings_btn'):
+            self.settings_btn.configure(
+                fg_color=WATER_COLORS["glass"],
+                hover_color=WATER_COLORS["glass_border"],
+                text_color=WATER_COLORS["accent"]
+            )
+        
+        if hasattr(self, 'close_btn'):
+            self.close_btn.configure(
+                fg_color="#4709f0",
+                hover_color="#c0392b"
+            )
+        
+        if hasattr(self, 'desktop_btn'):
+            self.desktop_btn.configure(
+                fg_color=WATER_COLORS["glass"],
+                hover_color="#2a6496",
+                text_color=WATER_COLORS["accent"]
+            )
+        
+        # Перерисовываем кнопки пространств (если существуют)
+        if hasattr(self, 'space_btns'):
+            for i, btn in enumerate(self.space_btns):
+                try:
+                    btn.configure(
+                        fg_color=WATER_COLORS["accent"] if i == self.cur_space else WATER_COLORS["glass"],
+                        text_color="#000" if i == self.cur_space else WATER_COLORS["text"],
+                        hover_color=WATER_COLORS["glass_border"]
+                    )
+                except:
+                    pass
+        
+        # Контент
+        if hasattr(self, 'content_frame'):
+            self.content_frame.configure(fg_color=WATER_COLORS["bg"])
+        if hasattr(self, 'windows_scroll'):
+            self.windows_scroll.configure(fg_color="transparent")
+        
+        # Перерисовываем список окон
+        if hasattr(self, '_render_windows_list'):
+            try:
+                self._render_windows_list()
+            except:
+                pass
+        
+        # Статус
+        if hasattr(self, 'status'):
+            self.status.configure(text_color=WATER_COLORS["text_dim"])
 
     def _init_flag_button(self):
-        """Initialize the flag toggle button"""
+        """Инициализация кнопки-флажка"""
+        # ✅ CustomTkinter принимает только int для corner_radius
+        corner_radius = 0
+        
+        # ✅ Для левой панели: сдвигаем на -1 пиксель чтобы "прилипала" к краю
+        pos = self.settings["ui"]["panel_position"]
+        flag_x = 0 if pos == "left" else 0
+        
         self.flag_btn = ctk.CTkButton(
-            self, text="🪟", width=FLAG_SIZE, height=FLAG_SIZE,
+            self, text="🪟", width=40, height=40,
             font=ctk.CTkFont(size=22), fg_color=WATER_COLORS["accent"],
             hover_color=WATER_COLORS["accent_glow"], text_color="#000",
-            corner_radius=12, command=self._toggle_panel
-        )
-        self.flag_btn.place(x=0, y=0)
-        self._add_hover_effect(self.flag_btn, WATER_COLORS["accent"], WATER_COLORS["accent_glow"])
-
-    def _init_header(self):
-        """Initialize header frame (visible when expanded)"""
-        self.header_frame = ctk.CTkFrame(
-            self, fg_color=WATER_COLORS["surface"], 
-            height=52, width=PANEL_WIDTH, corner_radius=0
+            corner_radius=corner_radius, command=self._toggle_panel
         )
         
-        # Close button
+        self.flag_btn.place(x=flag_x, y=0)
+        self._add_hover_effect(self.flag_btn, WATER_COLORS["accent"], WATER_COLORS["accent_glow"])
+
+    def _calculate_panel_width(self):
+        """Вычисляет необходимую ширину панели (всё в одну строку)"""
+        # Левые кнопки (⚙️ + >>): 100px
+        left_buttons = 100
+        
+        # Кнопки пространств: каждая 54px (50px + 4px отступы)
+        space_buttons = self.max_spaces * 58
+        
+        # Правые кнопки (🖥️ + ✓ + 💾): 170px
+        right_buttons = 170
+        
+        # Общая ширина
+        self.panel_width = left_buttons + space_buttons + right_buttons
+        
+        # Минимальная ширина
+        self.panel_width = max(self.panel_width, 380)
+        
+        # Максимальная ширина (чтобы не вылезало за экран)
+        if hasattr(self, 'SW'):
+            self.panel_width = min(self.panel_width, self.SW - 100)
+
+    def _init_header(self):
+        """Инициализация шапки с зеркалированием для позиции слева"""
+        self._calculate_panel_width()
+        
+        self.header_frame = ctk.CTkFrame(
+            self, fg_color=WATER_COLORS["surface"],
+            height=52, width=self.panel_width, corner_radius=0
+        )
+        
+        # ✅ Проверяем позицию для зеркалирования
+        is_left = self.settings["ui"]["panel_position"] == "left"
+        
+        if is_left:
+            # 🔄 ЗЕРКАЛЬНЫЙ РЕЖИМ: панели слева
+            self._init_header_mirrored()
+        else:
+            #  ОБЫЧНЫЙ РЕЖИМ: панели справа
+            self._init_header_normal()
+
+    def _init_header_normal(self):
+        """Обычный режим (панель справа)"""
+        # ⚙️ Настройки — слева
+        self.settings_btn = ctk.CTkButton(
+            self.header_frame, text="⚙️", width=40, height=38,
+            fg_color=WATER_COLORS["glass"], hover_color=WATER_COLORS["glass_border"],
+            text_color=WATER_COLORS["accent"], corner_radius=8,
+            font=ctk.CTkFont(size=14),
+            command=self._open_settings
+        )
+        self.settings_btn.place(x=10, y=8)
+        self._add_hover_effect(self.settings_btn, WATER_COLORS["glass"], WATER_COLORS["glass_border"])
+        
+        # >> Закрыть — рядом
         self.close_btn = ctk.CTkButton(
             self.header_frame, text=">>", width=36, height=36,
             font=ctk.CTkFont(size=16, weight="bold"), fg_color="#4709f0",
             hover_color="#c0392b", text_color="#fff",
             corner_radius=8, command=self._collapse_panel
         )
-        self.close_btn.place(x=10, y=8)
+        self.close_btn.place(x=60, y=8)
         self._add_hover_effect(self.close_btn, "#4709f0", "#c0392b")
         
-        # Space buttons
-        self.space_btns = []
-        planet_icons = ["🌍", "🌍", "🌍", "🌍"]
-        for i in range(4):
-            btn = ctk.CTkButton(
-                self.header_frame, text=f"{planet_icons[i]} {i+1}", width=50, height=38,
-                font=ctk.CTkFont(size=13, weight="bold"),
-                fg_color=WATER_COLORS["accent"] if i == 0 else WATER_COLORS["glass"],
-                hover_color=WATER_COLORS["glass_border"],
-                text_color="#000" if i == 0 else WATER_COLORS["text"],
-                corner_radius=8, command=lambda idx=i: self._switch_space(idx)
-            )
-            btn.place(x=60 + i * 52, y=7)
-            self.space_btns.append(btn)
-            self._add_hover_effect(btn, 
-                WATER_COLORS["accent"] if i == 0 else WATER_COLORS["glass"],
-                WATER_COLORS["glass_border"]
-            )
+        # Контейнер для пространств
+        spaces_width = self.panel_width - 270
+        self.space_buttons_container = ctk.CTkFrame(
+            self.header_frame, fg_color="transparent",
+            width=spaces_width, height=45
+        )
+        self.space_buttons_container.place(x=110, y=7)
         
-        # 💾 Save button
-        save_btn = ctk.CTkButton(
-            self.header_frame, text="💾", width=40, height=38,
+        self._update_space_buttons()
+        
+        # Правые кнопки: 🖥️ ✓ 💾
+        self.right_buttons_frame = ctk.CTkFrame(
+            self.header_frame, fg_color="transparent",
+            width=170, height=45
+        )
+        self.right_buttons_frame.place(x=self.panel_width - 170, y=7)
+        
+        self._init_right_buttons()
+
+    def _init_right_buttons(self):
+        """Инициализирует правые кнопки для обычного режима (панель справа)"""
+        # 💾 Сохранить
+        self.save_btn = ctk.CTkButton(
+            self.right_buttons_frame, text="💾", width=40, height=38,
             fg_color=WATER_COLORS["glass"], hover_color=WATER_COLORS["glass_border"],
             text_color=WATER_COLORS["accent"], corner_radius=8, font=ctk.CTkFont(size=16),
             command=self._save_layout
         )
-        save_btn.place(x=PANEL_WIDTH - 110, y=7)
-        self._add_hover_effect(save_btn, WATER_COLORS["glass"], WATER_COLORS["glass_border"])
+        self.save_btn.pack(side="right", padx=5)
+        self._add_hover_effect(self.save_btn, WATER_COLORS["glass"], WATER_COLORS["glass_border"])
         
-        # ✓ Apply button
-        apply_btn = ctk.CTkButton(
-            self.header_frame, text="✓", width=42, height=38,
+        # ✓ Применить
+        self.apply_btn = ctk.CTkButton(
+            self.right_buttons_frame, text="✓", width=42, height=38,
             fg_color=WATER_COLORS["accent"], hover_color=WATER_COLORS["accent_glow"],
             text_color="#000", corner_radius=8, font=ctk.CTkFont(size=18, weight="bold"),
             command=self._apply_layout
         )
-        apply_btn.place(x=PANEL_WIDTH - 55, y=7)
-        self._add_hover_effect(apply_btn, WATER_COLORS["accent"], WATER_COLORS["accent_glow"])
+        self.apply_btn.pack(side="right", padx=5)
+        self._add_hover_effect(self.apply_btn, WATER_COLORS["accent"], WATER_COLORS["accent_glow"])
         
-        # 🖥️ Show Desktop button (USER REQUEST)
+        # 🖥️ Показать рабочий стол
         self.desktop_btn = ctk.CTkButton(
-            self.header_frame, text="🖥️", width=40, height=38,
+            self.right_buttons_frame, text="🖥️", width=40, height=38,
             fg_color=WATER_COLORS["glass"], hover_color="#2a6496",
-            text_color=WATER_COLORS["accent"], corner_radius=8, 
-            font=ctk.CTkFont(size=16),
+            text_color=WATER_COLORS["accent"], corner_radius=8,
+            font=ctk.CTkFont(size=14),
             command=self._show_desktop
         )
-        self.desktop_btn.place(x=PANEL_WIDTH - 180, y=7)
+        self.desktop_btn.pack(side="right", padx=5)
         self._add_hover_effect(self.desktop_btn, WATER_COLORS["glass"], "#2a6496")
 
+    def _init_header_mirrored(self):
+        """Зеркальный режим (панель слева) — полная инверсия последовательности"""
+        
+        # === ЛЕВАЯ ГРУППА (была правой): 💾 ✓ 🖥️ ===
+        self.left_buttons_frame = ctk.CTkFrame(
+            self.header_frame, fg_color="transparent",
+            width=170, height=45
+        )
+        self.left_buttons_frame.place(x=10, y=7)
+        
+        # 💾 Сохранить
+        self.save_btn = ctk.CTkButton(
+            self.left_buttons_frame, text="💾", width=40, height=38,
+            fg_color=WATER_COLORS["glass"], hover_color=WATER_COLORS["glass_border"],
+            text_color=WATER_COLORS["accent"], corner_radius=8, font=ctk.CTkFont(size=16),
+            command=self._save_layout
+        )
+        self.save_btn.pack(side="left", padx=5)
+        self._add_hover_effect(self.save_btn, WATER_COLORS["glass"], WATER_COLORS["glass_border"])
+        
+        # ✓ Применить
+        self.apply_btn = ctk.CTkButton(
+            self.left_buttons_frame, text="✓", width=42, height=38,
+            fg_color=WATER_COLORS["accent"], hover_color=WATER_COLORS["accent_glow"],
+            text_color="#000", corner_radius=8, font=ctk.CTkFont(size=18, weight="bold"),
+            command=self._apply_layout
+        )
+        self.apply_btn.pack(side="left", padx=5)
+        self._add_hover_effect(self.apply_btn, WATER_COLORS["accent"], WATER_COLORS["accent_glow"])
+        
+        # 🖥️ Рабочий стол
+        self.desktop_btn = ctk.CTkButton(
+            self.left_buttons_frame, text="🖥️", width=40, height=38,
+            fg_color=WATER_COLORS["glass"], hover_color="#2a6496",
+            text_color=WATER_COLORS["accent"], corner_radius=8,
+            font=ctk.CTkFont(size=14),
+            command=self._show_desktop
+        )
+        self.desktop_btn.pack(side="left", padx=5)
+        self._add_hover_effect(self.desktop_btn, WATER_COLORS["glass"], "#2a6496")
+        
+        # === ЦЕНТР: кнопки пространств ===
+        spaces_width = self.panel_width - 270
+        self.space_buttons_container = ctk.CTkFrame(
+            self.header_frame, fg_color="transparent",
+            width=spaces_width, height=45
+        )
+        self.space_buttons_container.place(x=170, y=7)
+        
+        self._update_space_buttons()
+        
+        # === ПРАВАЯ ГРУППА: ⚙️ << ===
+        self.settings_btn = ctk.CTkButton(
+            self.header_frame, text="⚙️", width=40, height=38,
+            fg_color=WATER_COLORS["glass"], hover_color=WATER_COLORS["glass_border"],
+            text_color=WATER_COLORS["accent"], corner_radius=8,
+            font=ctk.CTkFont(size=14),
+            command=self._open_settings
+        )
+        self.settings_btn.place(x=self.panel_width - 100, y=8)
+        self._add_hover_effect(self.settings_btn, WATER_COLORS["glass"], WATER_COLORS["glass_border"])
+        
+        self.close_btn = ctk.CTkButton(
+            self.header_frame, text="<<", width=36, height=36,
+            font=ctk.CTkFont(size=16, weight="bold"), fg_color="#4709f0",
+            hover_color="#c0392b", text_color="#fff",
+            corner_radius=8, command=self._collapse_panel
+        )
+        self.close_btn.place(x=self.panel_width - 50, y=8)
+        self._add_hover_effect(self.close_btn, "#4709f0", "#c0392b")
+        
+        self.right_buttons_frame = None
+        
     def _init_content(self):
-        """Initialize content frame"""
+        """Инициализация контента"""
         self.content_frame = ctk.CTkFrame(
-            self, fg_color=WATER_COLORS["bg"], 
-            width=PANEL_WIDTH, height=PANEL_HEIGHT_EXPANDED - 52
+            self, fg_color=WATER_COLORS["bg"],
+            width=380, height=980 - 52
         )
         
         ctk.CTkLabel(
-            self.content_frame, text=" Окна (✓ — добавить, ⭐ — главное):", 
+            self.content_frame, text=" Окна (✓ — добавить, ⭐ — главное):",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=WATER_COLORS["text_dim"], fg_color="transparent",
-            width=PANEL_WIDTH - 20, height=24
+            width=360, height=24, anchor="w"
         ).place(x=10, y=8)
         
         self.windows_scroll = ctk.CTkScrollableFrame(
             self.content_frame, fg_color="transparent",
-            width=PANEL_WIDTH - 20, height=PANEL_HEIGHT_EXPANDED - 140
+            width=360, height=980 - 140
         )
         self.windows_scroll.place(x=10, y=35)
         
-        # Hotkey hint frame
+        # Подсказка про горячие клавиши
         hotkey_frame = ctk.CTkFrame(
-            self.content_frame, fg_color=WATER_COLORS["surface"], 
-            height=45, width=PANEL_WIDTH - 20, corner_radius=8
+            self.content_frame, fg_color=WATER_COLORS["surface"],
+            height=60, width=360, corner_radius=8
         )
-        hotkey_frame.place(x=10, y=PANEL_HEIGHT_EXPANDED - 125)
+        hotkey_frame.place(x=10, y=980 - 140)
         
         ctk.CTkLabel(
-            hotkey_frame, text="⌨️ Горячие клавиши:", 
+            hotkey_frame, text="⌨️ Горячие клавиши:",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=WATER_COLORS["accent"], fg_color="transparent"
         ).place(x=10, y=0)
         
         ctk.CTkLabel(
-            hotkey_frame, 
-            text="F1 — открыть/закрыть  •  F2 — расставить  •  F3 — сохранить  •  ctrl + D — рабочий стол", 
+            hotkey_frame,
+            text="F1 — меню  •  F2 — расставить  •  F3 — сохранить  •  Ctrl+F1..F4 — пространства",
             font=ctk.CTkFont(size=9),
             text_color=WATER_COLORS["text"], fg_color="transparent"
         ).place(x=10, y=20)
+        
+        ctk.CTkLabel(
+            hotkey_frame, text="⚙️ — настройки  •  🖥️ — рабочий стол",
+            font=ctk.CTkFont(size=9),
+            text_color=WATER_COLORS["text_dim"], fg_color="transparent"
+        ).place(x=10, y=38)
 
     def _init_status(self):
-        """Initialize status bar"""
+        """Инициализация статус-бара"""
         self.status = ctk.CTkLabel(
-            self, text="🚀 Готов", anchor="center", font=ctk.CTkFont(size=9),
+            self, text="🚀 Готов", anchor="center",
+            font=ctk.CTkFont(size=9),
             text_color=WATER_COLORS["text_dim"], fg_color="transparent",
-            width=PANEL_WIDTH, height=20
+            width=380, height=20
         )
-        self.status.place(x=0, y=PANEL_HEIGHT_EXPANDED - 20)
+        self.status.place(x=0, y=980 - 20)
 
     def _init_hotkeys(self):
-        """Initialize keyboard shortcuts"""
+        """Инициализация горячих клавиш"""
         self.bind("<F1>", lambda e: self._toggle_panel())
         self.bind("<F2>", lambda e: self._apply_layout())
         self.bind("<F3>", lambda e: self._save_layout())
         self.bind("<Escape>", lambda e: self._collapse_panel())
         self.bind("<Control-d>", lambda e: self._show_desktop())
         
-        # Global hotkeys if keyboard library available
+        # ✅ Ctrl+F1..F4 для переключения пространств
+        for i in range(min(4, self.max_spaces)):
+            self.bind(f"<Control-F{i+1}>", lambda e, idx=i: self._quick_switch_space(idx))
+        
+        # Глобальные хоткеи
         if KEYBOARD_AVAILABLE:
             self._setup_global_hotkeys()
 
     def _setup_global_hotkeys(self):
-        """Register global hotkeys via keyboard library"""
+        """Регистрация глобальных хоткеев"""
         try:
             keyboard.add_hotkey('ctrl+alt+f1', self._toggle_panel, suppress=False)
             keyboard.add_hotkey('ctrl+alt+f2', self._apply_layout, suppress=False)
             keyboard.add_hotkey('ctrl+alt+f3', self._save_layout, suppress=False)
             keyboard.add_hotkey('ctrl+alt+d', self._show_desktop, suppress=False)
+            
+            # Ctrl+F1..F4 для пространств
+            for i in range(min(4, self.max_spaces)):
+                keyboard.add_hotkey(f'ctrl+f{i+1}', lambda idx=i: self._quick_switch_space(idx), suppress=False)
+            
             logger.info("Global hotkeys registered")
         except Exception as e:
             logger.warning(f"Could not register global hotkeys: {e}")
 
     def _add_hover_effect(self, widget, base_color, hover_color):
-        """Add hover color effect to any widget"""
+        """Добавляет hover-эффект"""
         def on_enter(e):
             try:
                 widget.configure(fg_color=hover_color)
@@ -404,89 +1068,113 @@ class SmartDesktop(ctk.CTk):
             widget.bind("<Enter>", on_enter)
             widget.bind("<Leave>", on_leave)
         except:
-            pass  # Some widgets may not support binding
+            pass
 
     def _update_screen_metrics(self):
-        """Update screen dimensions dynamically"""
+        """Обновляет размеры экрана"""
         try:
             user32 = ctypes.windll.user32
             self.SW = user32.GetSystemMetrics(0)
             self.SH = user32.GetSystemMetrics(1)
         except Exception as e:
             logger.error(f"Screen metrics error: {e}")
-            self.SW, self.SH = 1920, 1080  # Fallback
+            self.SW, self.SH = 1920, 1080
 
     def _position_flag(self):
-        """Position flag button in top-right corner"""
+        """Позиционирует флажок"""
         self._update_screen_metrics()
-        px = self.SW - FLAG_SIZE
+        
+        pos = self.settings["ui"]["panel_position"]
+        if pos == "left":
+            px = 0  # ✅ ИСПРАВЛЕНО: было 50, теперь 0 — начинаем от края!
+        else:  # right
+            px = self.SW - 40
+        
         py = 50
-        self.geometry(f"{FLAG_SIZE}x{FLAG_SIZE}+{px}+{py}")
-
+        self.geometry(f"40x40+{px}+{py}")
+        
     def _toggle_panel(self):
-        """Toggle panel expanded/collapsed state"""
+        """Переключает панель"""
         if self.panel_expanded:
             self._collapse_panel()
         else:
             self._expand_panel()
 
     def _expand_panel(self):
-        """Expand panel with smooth animation"""
+        """Раскрывает панель"""
         if self.panel_expanded:
             return
         self.panel_expanded = True
         
         self._update_screen_metrics()
+        self._calculate_panel_width()
+        
         self.flag_btn.place_forget()
         self.header_frame.place(x=0, y=0)
         self.content_frame.place(x=0, y=52)
         
-        # Adaptive height
         max_height = self.SH - 100
-        panel_height = min(PANEL_HEIGHT_EXPANDED, max_height)
+        panel_height = min(980, max_height)
         
-        # Position: right side, vertically centered
-        px = self.SW - PANEL_WIDTH
+        pos = self.settings["ui"]["panel_position"]
+        if pos == "left":
+            px = 0
+        else:
+            px = self.SW - self.panel_width
+        
         py = max(50, (self.SH - panel_height) // 2)
         
-        self.geometry(f"{PANEL_WIDTH}x{panel_height}+{px}+{py}")
+        self.geometry(f"{self.panel_width}x{panel_height}+{px}+{py}")
         
-        # Adjust scrollable area
+        self.header_frame.configure(width=self.panel_width, height=52)
+        self.content_frame.configure(width=self.panel_width, height=panel_height - 52)
+        
         scroll_height = panel_height - 140
-        self.windows_scroll.configure(height=max(200, scroll_height))
+        self.windows_scroll.configure(height=max(200, scroll_height), width=self.panel_width - 20)
         self.windows_scroll.place(x=10, y=35)
         
-        # Update hotkey frame position
-        hotkey_y = panel_height - 125
+        hotkey_y = panel_height - 140
         for widget in self.content_frame.winfo_children():
-            if isinstance(widget, ctk.CTkFrame) and widget.winfo_y() > PANEL_HEIGHT_EXPANDED - 200:
-                widget.place(y=hotkey_y)
+            if isinstance(widget, ctk.CTkFrame) and widget.winfo_y() > 980 - 200:
+                widget.configure(width=self.panel_width - 20)
+                widget.place(y=hotkey_y, x=10)
         
+        self.status.configure(width=self.panel_width)
         self.status.place(y=panel_height - 20)
         
-        # Smooth alpha fade-in
         self._animate_alpha(0.0, 0.99, duration=200)
         
         self._refresh_windows_async()
-        self.ripple_manager.create_ripple(PANEL_WIDTH // 2, 20, is_main=True, max_radius=60)
+        self._start_window_monitor()
+        self._reset_auto_close_timer()
+        
+        self.ripple_manager.create_ripple(self.panel_width // 2, 20, is_main=True, max_radius=60)
         logger.info("Panel expanded")
 
     def _collapse_panel(self):
-        """Collapse panel with smooth animation"""
+        """Сворачивает панель"""
         if not self.panel_expanded:
             return
         
-        # Fade out first, then collapse
-        self._animate_alpha(0.99, 0.0, duration=150, 
+        # ✅ Остановка мониторинга
+        self._stop_window_monitor()
+        
+        # ✅ Отмена таймера авто-закрытия
+        if self._auto_close_timer:
+            self.after_cancel(self._auto_close_timer)
+            self._auto_close_timer = None
+        
+        # Анимация исчезновения
+        self._animate_alpha(0.99, 0.0, duration=150,
                           on_complete=self._finish_collapse)
         logger.info("Panel collapsing")
 
     def _animate_alpha(self, start, end, duration, on_complete=None):
-        """Smooth alpha transition animation"""
+        """Плавное изменение прозрачности"""
         steps = 10
         delay = max(10, duration // steps)
         delta = (end - start) / steps
-        current = [start]  # Use list for mutable reference in closure
+        current = [start]
         
         def step():
             current[0] += delta
@@ -503,7 +1191,7 @@ class SmartDesktop(ctk.CTk):
         step()
 
     def _finish_collapse(self):
-        """Complete collapse after fade animation"""
+        """Завершает сворачивание"""
         self.panel_expanded = False
         self.header_frame.place_forget()
         self.content_frame.place_forget()
@@ -513,9 +1201,12 @@ class SmartDesktop(ctk.CTk):
         logger.info("Panel collapsed")
 
     def _switch_space(self, idx):
-        """Switch between workspace tabs"""
+        """Переключает пространство"""
+        if idx >= len(self.spaces):
+            return
         if self.cur_space == idx:
             return
+        
         self.cur_space = idx
         for i, btn in enumerate(self.space_btns):
             btn.configure(
@@ -523,11 +1214,119 @@ class SmartDesktop(ctk.CTk):
                 text_color="#000" if i == idx else WATER_COLORS["text"]
             )
         self._render_windows_list()
-        self.ripple_manager.create_ripple(300, 20, is_main=False, max_radius=40)
+        self.ripple_manager.create_ripple(110 + idx * 52, 20, is_main=False, max_radius=40)
+        
+        # ✅ Сброс таймера авто-закрытия с задержкой
+        self._on_activity()
+        self._ignore_auto_close_until = time.time() + 3
+        
         logger.info(f"Switched to space {idx + 1}")
 
+    def _quick_switch_space(self, idx):
+        """Быстрое переключение пространства (для хоткеев)"""
+        if idx >= len(self.spaces):
+            return
+        
+        if self.cur_space == idx:
+            # Мигание для фидбека
+            if idx < len(self.space_btns):
+                btn = self.space_btns[idx]
+                orig = btn.cget("fg_color")
+                btn.configure(fg_color=WATER_COLORS["accent_glow"])
+                self.after(100, lambda: btn.configure(fg_color=orig))
+            return
+        
+        # Визуальный фидбек
+        if self.panel_expanded:
+            self.ripple_manager.create_ripple(110 + idx * 52, 20, is_main=True, max_radius=30)
+        
+        self._switch_space(idx)
+        
+        # Фидбек в статусе
+        if not self.panel_expanded:
+            self.status.configure(text=f"🌍 Пространство {idx + 1}")
+            self.after(2000, lambda: self.status.configure(text=""))
+
+    # ========================================================================
+    # ✅ REAL-TIME WINDOW MONITORING
+    # ========================================================================
+
+    def _start_window_monitor(self):
+        """Запускает фоновый мониторинг окон"""
+        if self._window_monitor_active:
+            return
+        self._window_monitor_active = True
+        self._last_window_hash = None
+        self._check_windows_changed()
+        logger.info("Window monitor started")
+
+    def _stop_window_monitor(self):
+        """Останавливает мониторинг"""
+        self._window_monitor_active = False
+        logger.info("Window monitor stopped")
+
+    def _check_windows_changed(self):
+        """Проверяет изменения в списке окон"""
+        if not self._window_monitor_active or not self.panel_expanded:
+            self.after(self.settings["behavior"]["window_monitor_interval"], self._check_windows_changed)
+            return
+        
+        try:
+            # Быстрый хэш для детекта изменений
+            current_hash = hash(tuple(sorted(
+                (hwnd, win32gui.GetWindowText(hwnd)[:20])
+                for hwnd, _ in self.available[:20]
+            )))
+            
+            if current_hash != self._last_window_hash:
+                self._last_window_hash = current_hash
+                self._refresh_windows_async()
+            else:
+                self.after(self.settings["behavior"]["window_monitor_interval"], self._check_windows_changed)
+        except Exception as e:
+            logger.debug(f"Window check error: {e}")
+            self.after(self.settings["behavior"]["window_monitor_interval"], self._check_windows_changed)
+
+    # ========================================================================
+    # ✅ AUTO-CLOSE PANEL
+    # ========================================================================
+
+    def _reset_auto_close_timer(self, ignore_seconds=0):
+        """Сбрасывает таймер авто-закрытия"""
+        if self._auto_close_timer:
+            self.after_cancel(self._auto_close_timer)
+            self._auto_close_timer = None
+        
+        if ignore_seconds > 0:
+            self._ignore_auto_close_until = time.time() + ignore_seconds
+        
+        delay = self.settings["behavior"]["auto_close_delay"] * 1000
+        if delay <= 0:
+            return
+        
+        self._auto_close_timer = self.after(delay, self._try_auto_close)
+
+    def _try_auto_close(self):
+        """Пытается закрыть панель"""
+        if time.time() < self._ignore_auto_close_until:
+            self._reset_auto_close_timer()
+            return
+        
+        if self.panel_expanded:
+            self._collapse_panel()
+            logger.info("Panel auto-closed after inactivity")
+
+    def _on_activity(self):
+        """Вызывается при активности в панели"""
+        if self.panel_expanded:
+            self._reset_auto_close_timer()
+
+    # ========================================================================
+    # WINDOW MANAGEMENT
+    # ========================================================================
+
     def _refresh_windows_async(self):
-        """Non-blocking window list refresh via threading"""
+        """Асинхронное обновление списка окон"""
         def worker():
             result = []
             def enum_callback(hwnd, _):
@@ -539,7 +1338,7 @@ class SmartDesktop(ctk.CTk):
                         return True
                     
                     lower = (title + win32gui.GetClassName(hwnd)).lower()
-                    skip = ["taskbar", "program manager", "shell_traywnd", "search", 
+                    skip = ["taskbar", "program manager", "shell_traywnd", "search",
                            "copilot", "windows shell", "seth", "application frame host",
                            "settings", "start", "cortana", "action center", "notification"]
                     if any(kw in lower for kw in skip):
@@ -552,33 +1351,29 @@ class SmartDesktop(ctk.CTk):
                 return True
             
             win32gui.EnumWindows(enum_callback, None)
-            # Return to main thread
             self.after(0, lambda: self._update_available_windows(result))
         
         threading.Thread(target=worker, daemon=True).start()
 
     def _update_available_windows(self, windows_list):
-        """Update available windows list in main thread"""
+        """Обновляет список доступных окон"""
         self.available = windows_list
         if self.panel_expanded:
             self._render_windows_list()
         self.status.configure(text=f"🔍 Найдено: {len(windows_list)}")
 
     def _show_desktop(self):
-        """Minimize all windows to show desktop (USER REQUEST)"""
+        """Показывает рабочий стол"""
         try:
-            # Method 1: Win API broadcast (fastest)
             hwnd = win32gui.FindWindow("Shell_TrayWnd", None)
             if hwnd:
                 win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 419, 0)
             
             self.status.configure(text="🖥️ Рабочий стол")
-            self.ripple_manager.create_ripple(PANEL_WIDTH // 2, 20, is_main=True, max_radius=60)
+            self.ripple_manager.create_ripple(190, 20, is_main=True, max_radius=60)
             logger.info("Show desktop triggered")
-            
         except Exception as e:
             logger.error(f"Show desktop error: {e}")
-            # Fallback: enumerate and minimize
             def enum_minimize(hwnd, _):
                 try:
                     if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
@@ -589,7 +1384,7 @@ class SmartDesktop(ctk.CTk):
             win32gui.EnumWindows(enum_minimize, None)
 
     def _restore_windows(self):
-        """Restore windows from current space"""
+        """Восстанавливает окна"""
         space = self.spaces[self.cur_space]
         restored = 0
         for win in space["windows"]:
@@ -603,7 +1398,7 @@ class SmartDesktop(ctk.CTk):
         logger.info(f"Restored {restored} windows")
 
     def _refresh_windows(self):
-        """Synchronous refresh (fallback)"""
+        """Синхронное обновление (fallback)"""
         self.available = []
         
         def enum_callback(hwnd, _):
@@ -615,7 +1410,7 @@ class SmartDesktop(ctk.CTk):
                     return True
                 
                 lower = (title + win32gui.GetClassName(hwnd)).lower()
-                skip = ["taskbar", "program manager", "shell_traywnd", "search", 
+                skip = ["taskbar", "program manager", "shell_traywnd", "search",
                        "copilot", "windows shell", "seth", "application frame host",
                        "settings", "start", "cortana", "action center", "notification"]
                 if any(kw in lower for kw in skip):
@@ -632,14 +1427,14 @@ class SmartDesktop(ctk.CTk):
         self._render_windows_list()
 
     def _render_windows_list(self):
-        """Render the list of available windows"""
+        """Рендерит список окон"""
         for w in self.windows_scroll.winfo_children():
             w.destroy()
         self.card_widgets = []
         
         space = self.spaces[self.cur_space]
         space_hwnds = {w["hwnd"] for w in space["windows"]}
-        row_width = PANEL_WIDTH - 20
+        row_width = 380 - 20
         
         for hwnd, title in self.available:
             in_space = hwnd in space_hwnds
@@ -648,50 +1443,69 @@ class SmartDesktop(ctk.CTk):
             
             bg_color = WATER_COLORS["glass"] if in_space else WATER_COLORS["surface"]
             
-            # Fixed height row
-            row = ctk.CTkFrame(self.windows_scroll, fg_color=bg_color, 
-                              corner_radius=8, height=44, width=row_width)
+            row = ctk.CTkFrame(
+                self.windows_scroll, fg_color=bg_color,
+                corner_radius=8, height=44, width=row_width
+            )
             row.pack(fill=tk.X, pady=2, padx=0)
             row.pack_propagate(False)
             
             display = title if len(title) <= 35 else title[:32] + "..."
             
-            # Window title label
-            label = ctk.CTkLabel(row, text=display, anchor="w",
-                         font=ctk.CTkFont(size=10, weight="bold" if in_space else "normal"), 
-                         text_color=WATER_COLORS["accent"] if in_space else WATER_COLORS["text"],
-                         width=row_width - 90, height=44)
+            label = ctk.CTkLabel(
+                row, text=display, anchor="w",
+                font=ctk.CTkFont(size=10, weight="bold" if in_space else "normal"),
+                text_color=WATER_COLORS["accent"] if in_space else WATER_COLORS["text"],
+                width=row_width - 90, height=44
+            )
             label.place(x=10, y=0)
             
-            # Check button (always visible)
+            # Галочка
             check_text = "✓" if in_space else "🟦"
             check_color = WATER_COLORS["accent"] if in_space else WATER_COLORS["text_dim"]
             
-            btn_check = ctk.CTkButton(row, text=check_text, width=38, height=36,
-                          fg_color="transparent", hover_color=WATER_COLORS["glass"],
-                          text_color=check_color, corner_radius=6, 
-                          font=ctk.CTkFont(size=16, weight="bold"),
-                          command=lambda h=hwnd, t=title: self._toggle_in_space(h, t)
-                         )
+            btn_check = ctk.CTkButton(
+                row, text=check_text, width=38, height=36,
+                fg_color="transparent", hover_color=WATER_COLORS["glass"],
+                text_color=check_color, corner_radius=6,
+                font=ctk.CTkFont(size=16, weight="bold"),
+                command=lambda h=hwnd, t=title: self._toggle_in_space(h, t)
+            )
             btn_check.place(x=row_width - 78, y=4)
             self._add_hover_effect(btn_check, "transparent", WATER_COLORS["glass"])
             
-            # Star button (only if in space)
+            # ✅ Бинды для активности
+            for widget in [btn_check, label, row]:
+                try:
+                    widget.bind("<Button-1>", lambda e: self._on_activity())
+                    widget.bind("<Enter>", lambda e: self._on_activity())
+                except:
+                    pass
+            
+            # Звезда
             if in_space:
                 main_text = "⭐" if is_main else "☆"
-                btn_main = ctk.CTkButton(row, text=main_text, width=34, height=36,
-                              fg_color="transparent", hover_color=WATER_COLORS["glass_border"],
-                              text_color=WATER_COLORS["accent"] if is_main else WATER_COLORS["text_dim"],
-                              corner_radius=6, font=ctk.CTkFont(size=13),
-                              command=lambda h=hwnd: self._toggle_main(h)
-                             )
+                btn_main = ctk.CTkButton(
+                    row, text=main_text, width=34, height=36,
+                    fg_color="transparent", hover_color=WATER_COLORS["glass_border"],
+                    text_color=WATER_COLORS["accent"] if is_main else WATER_COLORS["text_dim"],
+                    corner_radius=6, font=ctk.CTkFont(size=13),
+                    command=lambda h=hwnd: self._toggle_main(h)
+                )
                 btn_main.place(x=row_width - 36, y=4)
                 self._add_hover_effect(btn_main, "transparent", WATER_COLORS["glass_border"])
+                
+                for widget in [btn_main]:
+                    try:
+                        widget.bind("<Button-1>", lambda e: self._on_activity())
+                        widget.bind("<Enter>", lambda e: self._on_activity())
+                    except:
+                        pass
             
             self.card_widgets.append(row)
 
     def _toggle_in_space(self, hwnd, title):
-        """Toggle window inclusion in current space"""
+        """Переключает окно в пространстве"""
         space = self.spaces[self.cur_space]
         space_hwnds = [w["hwnd"] for w in space["windows"]]
         
@@ -699,13 +1513,17 @@ class SmartDesktop(ctk.CTk):
             space["windows"] = [w for w in space["windows"] if w["hwnd"] != hwnd]
             logger.info(f"Removed from space: {title}")
         else:
-            if len(space["windows"]) >= 10:
-                messagebox.showwarning("Лимит", "Максимум 10 окон на пространство!")
+            # ✅ Динамический лимит
+            if len(space["windows"]) >= self.max_windows_per_space:
+                messagebox.showwarning(
+                    "Лимит",
+                    f"Максимум {self.max_windows_per_space} окон на пространство!"
+                )
                 return
             space["windows"].append({
-                "hwnd": hwnd, 
-                "title": title, 
-                "is_main": False, 
+                "hwnd": hwnd,
+                "title": title,
+                "is_main": False,
                 "saved_rect": None
             })
             logger.info(f"Added to space: {title}")
@@ -714,7 +1532,7 @@ class SmartDesktop(ctk.CTk):
         self._render_windows_list()
 
     def _toggle_main(self, hwnd):
-        """Toggle main window flag"""
+        """Переключает главное окно"""
         space = self.spaces[self.cur_space]
         for win in space["windows"]:
             if win["hwnd"] == hwnd:
@@ -725,7 +1543,7 @@ class SmartDesktop(ctk.CTk):
         self._render_windows_list()
 
     def _get_window_rect_cached(self, hwnd):
-        """Cached window rect lookup for performance"""
+        """Кэшированный GetWindowRect"""
         now = time.time()
         if now - self._cache_timestamp > self._cache_ttl:
             self._window_rect_cache.clear()
@@ -741,7 +1559,7 @@ class SmartDesktop(ctk.CTk):
         return self._window_rect_cache[hwnd]
 
     def _save_layout(self):
-        """Save current window positions"""
+        """Сохраняет позиции окон"""
         space = self.spaces[self.cur_space]
         saved = 0
         
@@ -759,7 +1577,7 @@ class SmartDesktop(ctk.CTk):
         if saved > 0:
             self._save_config()
             self.status.configure(text=f"💾 Сохранено: {saved}")
-            self.ripple_manager.create_ripple(PANEL_WIDTH // 2, 20, is_main=True, max_radius=60)
+            self.ripple_manager.create_ripple(190, 20, is_main=True, max_radius=60)
             self._render_windows_list()
             logger.info(f"Saved positions for {saved} windows")
         else:
@@ -767,21 +1585,18 @@ class SmartDesktop(ctk.CTk):
             logger.warning("Save layout: no windows to save")
 
     def _save_config(self):
-        """Save configuration with backup and validation"""
+        """Сохраняет конфигурацию"""
         try:
-            # Create backup
             if os.path.exists(CONFIG_FILE):
                 backup = CONFIG_FILE + ".bak"
                 with open(CONFIG_FILE, "r", encoding="utf-8") as src:
                     with open(backup, "w", encoding="utf-8") as dst:
                         dst.write(src.read())
             
-            # Validate and prepare data
             data = []
             for space in self.spaces:
                 space_data = []
                 for win in space["windows"]:
-                    # Skip windows that no longer exist
                     if not win32gui.IsWindow(win["hwnd"]):
                         logger.warning(f"Window no longer exists: {win['title']}")
                         continue
@@ -791,17 +1606,14 @@ class SmartDesktop(ctk.CTk):
                     space_data.append(win_copy)
                 data.append({"windows": space_data})
             
-            # Atomic write
             temp_file = CONFIG_FILE + ".tmp"
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(temp_file, CONFIG_FILE)
             
             logger.info(f"Config saved: {sum(len(s['windows']) for s in data)} windows")
-            
         except Exception as e:
             logger.error(f"Config save failed: {e}", exc_info=True)
-            # Attempt restore from backup
             if os.path.exists(CONFIG_FILE + ".bak"):
                 try:
                     os.replace(CONFIG_FILE + ".bak", CONFIG_FILE)
@@ -810,7 +1622,7 @@ class SmartDesktop(ctk.CTk):
                     logger.error(f"Backup restore failed: {restore_err}")
 
     def _load_config(self):
-        """Load configuration from file"""
+        """Загружает конфигурацию"""
         if not os.path.exists(CONFIG_FILE):
             logger.info("No config file found, starting fresh")
             return
@@ -818,11 +1630,10 @@ class SmartDesktop(ctk.CTk):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             
-            for i, space_data in enumerate(data[:4]):
+            for i, space_data in enumerate(data[:self.max_spaces]):
                 for win in space_data.get("windows", []):
                     if win.get("saved_rect"):
                         win["saved_rect"] = tuple(win["saved_rect"])
-                    # Only add if window still exists
                     if win32gui.IsWindow(win["hwnd"]):
                         self.spaces[i]["windows"].append(win)
                     else:
@@ -833,7 +1644,7 @@ class SmartDesktop(ctk.CTk):
             logger.error(f"Config load failed: {e}", exc_info=True)
 
     def _apply_layout(self):
-        """Apply saved window layout"""
+        """Применяет расстановку окон"""
         space = self.spaces[self.cur_space]
         if not space["windows"]:
             messagebox.showinfo("Инфо", "Добавьте окна галочкой ✓")
@@ -841,27 +1652,28 @@ class SmartDesktop(ctk.CTk):
         
         logger.info(f"Applying layout for space {self.cur_space + 1}")
         
-        # Hide other spaces
-        for i, sp in enumerate(self.spaces):
-            if i == self.cur_space:
-                continue
-            for win in sp["windows"]:
-                try:
-                    if win32gui.IsWindowVisible(win["hwnd"]):
-                        win32gui.ShowWindow(win["hwnd"], win32con.SW_MINIMIZE)
-                except Exception as e:
-                    logger.debug(f"Minimize error: {e}")
+        # Сворачиваем другие пространства
+        if self.settings["behavior"]["minimize_other_spaces"]:
+            for i, sp in enumerate(self.spaces):
+                if i == self.cur_space:
+                    continue
+                for win in sp["windows"]:
+                    try:
+                        if win32gui.IsWindowVisible(win["hwnd"]):
+                            win32gui.ShowWindow(win["hwnd"], win32con.SW_MINIMIZE)
+                    except Exception as e:
+                        logger.debug(f"Minimize error: {e}")
         
-        time.sleep(0.03)  # Minimal delay
+        time.sleep(0.03)
         
-        # Restore windows in current space
+        # Восстанавливаем окна текущего пространства
         for win in space["windows"]:
             try:
                 win32gui.ShowWindow(win["hwnd"], win32con.SW_RESTORE)
             except Exception as e:
                 logger.debug(f"Restore error: {e}")
         
-        # Get work area dynamically
+        # Рабочая область
         try:
             work_left, work_top, work_right, work_bottom = win32gui.SystemParametersInfo(
                 win32con.SPI_GETWORKAREA
@@ -877,7 +1689,6 @@ class SmartDesktop(ctk.CTk):
         MIN_W, MIN_H = 200, 150
         
         def move_window(hwnd, x, y, w, h):
-            """Move window with boundary checks"""
             try:
                 if not win32gui.IsWindow(hwnd):
                     return
@@ -887,30 +1698,27 @@ class SmartDesktop(ctk.CTk):
                 abs_x = work_left + int(x)
                 abs_y = work_top + int(y)
                 
-                # Strict boundary enforcement
                 abs_x = max(work_left, min(abs_x, work_right - w))
                 abs_y = max(work_top, min(abs_y, work_bottom - h))
                 
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                time.sleep(0.005)  # Minimal delay between moves
+                time.sleep(0.005)
                 win32gui.MoveWindow(hwnd, abs_x, abs_y, int(w), int(h), True)
             except Exception as e:
                 logger.error(f"MoveWindow failed for hwnd {hwnd}: {e}")
 
-        # Separate saved vs auto-layout windows
         saved = [w for w in space["windows"] if w.get("saved_rect")]
         auto = [w for w in space["windows"] if not w.get("saved_rect")]
         
-        # Apply saved positions first
         for win in saved:
             x, y, w, h = win["saved_rect"]
             move_window(win["hwnd"], x, y, w, h)
         
-        # Auto-layout remaining windows
         n = len(auto)
         main_win = next((w for w in auto if w.get("is_main")), None)
         regular_wins = [w for w in auto if not w.get("is_main")]
         
+        # Логика расстановки (как в оригинале)
         if n == 0:
             pass
         elif n == 1:
@@ -992,28 +1800,178 @@ class SmartDesktop(ctk.CTk):
                     move_window(win["hwnd"], x, y, cell_w, cell_h)
 
         self.status.configure(text=f"✅ Расставлено: {len(space['windows'])}")
-        self.ripple_manager.create_ripple(PANEL_WIDTH // 2, 20, is_main=True, max_radius=60)
+        self.ripple_manager.create_ripple(190, 20, is_main=True, max_radius=60)
         self.after(1000, self._collapse_panel)
         logger.info(f"Layout applied: {len(space['windows'])} windows positioned")
 
-    def destroy(self):
-        """Cleanup on exit"""
-        logger.info("Smart Desktop shutting down")
+    # ========================================================================
+    # ✅ SETTINGS MANAGEMENT
+    # ========================================================================
+
+    def _open_settings(self):
+        """Открывает диалог настроек"""
+        dialog = SettingsDialog(
+            self, self.settings,
+            self._apply_settings,
+            self._preview_settings
+        )
+        dialog.wait_window()
+
+    def _preview_settings(self, partial_settings):
+        """Предпросмотр изменений (опционально)"""
+        # Можно реализовать live preview
+        pass
+
+    def _apply_settings(self, new_settings):
+        """Применяет новые настройки"""
+        old_position = self.settings["ui"]["panel_position"]
+        old_theme = self.settings["ui"]["theme"]
         
-        # Unregister global hotkeys
+        self.settings = new_settings
+        self._apply_theme_settings()
+        
+        self.max_spaces = self.settings["behavior"]["max_spaces"]
+        self.max_windows_per_space = self.settings["behavior"]["max_windows_per_space"]
+        
+        while len(self.spaces) < self.max_spaces:
+            self.spaces.append({"windows": []})
+        if len(self.spaces) > self.max_spaces:
+            self.spaces = self.spaces[:self.max_spaces]
+        
+        if old_position != self.settings["ui"]["panel_position"] or old_theme != self.settings["ui"]["theme"]:
+            if self.panel_expanded:
+                self.header_frame.place_forget()
+                self._calculate_panel_width()
+                self._init_header()
+                self.header_frame.place(x=0, y=0)
+                self.content_frame.place(x=0, y=52)
+                self.content_frame.configure(width=self.panel_width, height=self.winfo_height() - 52)
+                self.windows_scroll.configure(width=self.panel_width - 20)
+                for widget in self.content_frame.winfo_children():
+                    if isinstance(widget, ctk.CTkFrame) and widget.winfo_y() > self.winfo_height() - 200:
+                        widget.configure(width=self.panel_width - 20)
+                self.status.configure(width=self.panel_width)
+                self.geometry(f"{self.panel_width}x{self.winfo_height()}+{self.winfo_x()}+{self.winfo_y()}")
+                self._render_windows_list()
+            else:
+                self._calculate_panel_width()
+        else:
+            if self.panel_expanded:
+                self.header_frame.configure(width=self.panel_width, height=52)
+                self._update_space_buttons()
+                if hasattr(self, 'right_buttons_frame') and self.right_buttons_frame:
+                    self.right_buttons_frame.place(x=self.panel_width - 170, y=7)
+                self.content_frame.configure(width=self.panel_width)
+                self.windows_scroll.configure(width=self.panel_width - 20)
+                self.status.configure(width=self.panel_width)
+                self.geometry(f"{self.panel_width}x{self.winfo_height()}+{self.winfo_x()}+{self.winfo_y()}")
+        
+        if self._window_monitor_active:
+            self._stop_window_monitor()
+            if self.panel_expanded:
+                self._start_window_monitor()
+        
+        self._save_settings_file()
+        self.status.configure(text="⚙️ Настройки применены")
+        
+        # ✅ Автозакрытие панели после применения настроек
+        if self.panel_expanded:
+            self.after(500, self._collapse_panel)
+        
+        logger.info(f"Settings applied: position={self.settings['ui']['panel_position']}, theme={self.settings['ui']['theme']}")
+
+    def _update_space_buttons(self):
+        """Обновляет кнопки пространств (все в одну строку)"""
+        # Очищаем старые
+        if hasattr(self, 'space_buttons_container'):
+            for btn in self.space_buttons_container.winfo_children():
+                btn.destroy()
+        self.space_btns = []
+        
+        planet_icons = ["🌍", "🌍", "🌍", "🌍", "🌍", "🌍", "🌍", "🌍", "🌍", "🌍"]
+        
+        # ✅ ВСЕ кнопки в одну строку с pack(side="left")
+        for i in range(min(self.max_spaces, 10)):
+            btn = ctk.CTkButton(
+                self.space_buttons_container, 
+                text=f"{planet_icons[i]} {i+1}", 
+                width=45, height=38,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                fg_color=WATER_COLORS["accent"] if i == self.cur_space else WATER_COLORS["glass"],
+                hover_color=WATER_COLORS["glass_border"],
+                text_color="#000" if i == self.cur_space else WATER_COLORS["text"],
+                corner_radius=8, 
+                command=lambda idx=i: self._switch_space(idx)
+            )
+            btn.pack(side="left", padx=4)
+            self.space_btns.append(btn)
+            self._add_hover_effect(
+                btn,
+                WATER_COLORS["accent"] if i == self.cur_space else WATER_COLORS["glass"],
+                WATER_COLORS["glass_border"]
+            )
+
+    def _update_panel_position(self):
+        """Обновляет позицию панели"""
+        if self.panel_expanded:
+            self._update_screen_metrics()
+            self._calculate_panel_width()  # ✅ Пересчитываем
+            
+            pos = self.settings["ui"]["panel_position"]
+            if pos == "left":
+                px = 0
+            else:
+                px = self.SW - self.panel_width
+            
+            current_geo = self.geometry()
+            parts = current_geo.split('+')
+            if len(parts) == 3:
+                _, height, _ = parts
+                self.geometry(f"{self.panel_width}x{height}+{px}+{parts[2]}")
+                
+                # Обновляем размеры фреймов
+                self.header_frame.configure(width=self.panel_width)
+                self.content_frame.configure(width=self.panel_width)
+                self.status.configure(width=self.panel_width)
+
+    def _load_settings(self):
+        """Загружает настройки из файла"""
+        if not os.path.exists(SETTINGS_FILE):
+            logger.info("No settings file found, using defaults")
+            return
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            # Merge с дефолтными
+            self.settings = {**DEFAULT_SETTINGS, **loaded}
+            logger.info("Settings loaded")
+        except Exception as e:
+            logger.error(f"Settings load error: {e}")
+            self.settings = DEFAULT_SETTINGS.copy()
+
+    def _save_settings_file(self):
+        """Сохраняет настройки в файл"""
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, ensure_ascii=False, indent=2)
+            logger.info("Settings saved to file")
+        except Exception as e:
+            logger.error(f"Settings save error: {e}")
+
+    def destroy(self):
+        """Очистка при выходе"""
+        logger.info("=== Smart Desktop Shutting Down ===")
+        
         if KEYBOARD_AVAILABLE:
             try:
                 keyboard.unhook_all()
             except:
                 pass
         
-        # Cleanup ripples
         self.ripple_manager.cleanup()
-        
-        # Save config
         self._save_config()
+        self._save_settings_file()
         
-        # Restore all windows to normal state
         for space in self.spaces:
             for win in space["windows"]:
                 try:
@@ -1030,17 +1988,15 @@ class SmartDesktop(ctk.CTk):
 # ============================================================================
 
 if __name__ == "__main__":
-    # Enable High DPI scaling (Windows)
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except:
         pass
     
-    # Set customtkinter appearance
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     
-    logger.info("=== Smart Desktop Starting ===")
+    logger.info("=== Smart Desktop v1.1 Starting ===")
     app = SmartDesktop()
     
     try:
