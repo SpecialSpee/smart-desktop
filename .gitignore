@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environment
+.venv/
+venv/
+
+# Logs
+*.log
+launcher.log
+smart_desktop.log
+
+# Config files (user data)
+desktop_manager_config.json
+desktop_manager_config.json.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+*.exe
+dist/
+build/
