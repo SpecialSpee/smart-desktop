@@ -7,7 +7,7 @@
 # 🪟 Smart Desktop
 
 > Умный менеджер окон с пространствами для Windows  
-> **Версия:** 1.2.0 | **Статус:** ✅ Стабильный релиз
+> **Версия:** 1.2.1 | **Статус:** ✅ Стабильный релиз (hotfix)
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)

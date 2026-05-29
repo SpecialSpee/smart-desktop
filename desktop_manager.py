@@ -1503,6 +1503,7 @@ class SmartDesktop(ctk.CTk):
         logger.info("Panel collapsed")
 
     def _switch_space(self, idx):
+        """Переключает пространство с правильной очисткой экрана"""
         if idx >= len(self.spaces):
             return
         if self.cur_space == idx:
@@ -1517,6 +1518,20 @@ class SmartDesktop(ctk.CTk):
                     text_color=WATER_COLORS["accent"]
                 )
         
+        # ✅ СВЁРТЫВАЕМ ОКНА ДРУГИХ ПРОСТРАНСТВ (если включена настройка)
+        if self.settings["behavior"]["minimize_other_spaces"]:
+            for i, sp in enumerate(self.spaces):
+                if i == idx:  # Не сворачиваем окна целевого пространства
+                    continue
+                for win in sp["windows"]:
+                    try:
+                        if win32gui.IsWindowVisible(win["hwnd"]):
+                            win32gui.ShowWindow(win["hwnd"], win32con.SW_MINIMIZE)
+                    except Exception as e:
+                        logger.debug(f"Minimize error in switch_space: {e}")
+            time.sleep(0.01)  # Микро-пауза для стабильности
+        
+        # Переключаем пространство
         self.cur_space = idx
         for i, btn in enumerate(self.space_btns):
             btn.configure(
@@ -1528,7 +1543,7 @@ class SmartDesktop(ctk.CTk):
         
         self._on_activity()
         self._ignore_auto_close_until = time.time() + 3
-        logger.info(f"Switched to space {idx + 1}")
+        logger.info(f"Switched to space {idx + 1} (other spaces minimized)")
 
     def _quick_switch_space(self, idx):
         if idx >= len(self.spaces):
