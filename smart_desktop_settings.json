@@ -6,12 +6,12 @@
     "colors": null
   },
   "behavior": {
-    "max_spaces": 3,
-    "max_windows_per_space": 25,
+    "max_spaces": 4,
+    "max_windows_per_space": 15,
     "auto_close_delay": 15,
-    "window_monitor_interval": 5000,
-    "minimize_other_spaces": true,
-    "auto_close_after_apply": 10
+    "auto_close_after_apply": 3,
+    "window_monitor_interval": 2000,
+    "minimize_other_spaces": true
   },
   "hotkeys": {
     "toggle_panel": "F1",
@@ -24,6 +24,6 @@
       "Ctrl+F3",
       "Ctrl+F4"
     ],
-    "all_windows_mode": "control+shift+s"
+    "all_windows_mode": "control+shift+a"
   }
 }
